@@ -1,37 +1,40 @@
 from __future__ import division
+
 from setproctitle import setproctitle as ptitle
-import numpy as np
+
 import torch
 import torch.optim as optim
-from environment import create_env
-from utils import ensure_shared_grads
-from model import A3C_CONV, A3C_MLP
-from player_util import Agent
 from torch.autograd import Variable
-import gym
+
+from model import A3C_MLP
+from player_util import Agent
+from torcs_wrapper import TorcsWrapper
+from utils import ensure_shared_grads
 
 
-def train(rank, args, shared_model, optimizer):
+def train(rank, args, shared_model, optimizer, num_train):
     ptitle('Training Agent: {}'.format(rank))
     gpu_id = args.gpu_ids[rank % len(args.gpu_ids)]
     torch.manual_seed(args.seed + rank)
     if gpu_id >= 0:
         torch.cuda.manual_seed(args.seed + rank)
-    env = create_env(args.env, args)
+    # env = create_env(args.env, args)
+    env = TorcsWrapper(port=3101 + rank * 10, noisy=True, throttle=0.20, control_dim = 1, k = 2.0)
+
     if optimizer is None:
         if args.optimizer == 'RMSprop':
             optimizer = optim.RMSprop(shared_model.parameters(), lr=args.lr)
         if args.optimizer == 'Adam':
             optimizer = optim.Adam(shared_model.parameters(), lr=args.lr)
 
-    env.seed(args.seed + rank)
+    # env.seed(args.seed + rank)
     player = Agent(None, env, args, None)
     player.gpu_id = gpu_id
     if args.model == 'MLP':
-        player.model = A3C_MLP(
-            player.env.observation_space.shape[0], player.env.action_space, args.stack_frames)
-    if args.model == 'CONV':
-        player.model = A3C_CONV(args.stack_frames, player.env.action_space)
+        player.model = A3C_MLP(25, 1, 1)
+            # player.env.observation_space.shape[0], player.env.action_space, args.stack_frames)
+    # if args.model == 'CONV':
+    #     player.model = A3C_CONV(args.stack_frames, player.env.action_space)
 
     player.state = player.env.reset()
     player.state = torch.from_numpy(player.state).float()
@@ -46,6 +49,7 @@ def train(rank, args, shared_model, optimizer):
                 player.model.load_state_dict(shared_model.state_dict())
         else:
             player.model.load_state_dict(shared_model.state_dict())
+
         if player.done:
             if gpu_id >= 0:
                 with torch.cuda.device(gpu_id):
@@ -59,9 +63,7 @@ def train(rank, args, shared_model, optimizer):
             player.hx = Variable(player.hx.data)
             
         for step in range(args.num_steps):
-
             player.action_train()
-
             if player.done:
                 break
 
@@ -80,8 +82,8 @@ def train(rank, args, shared_model, optimizer):
             R = torch.zeros(1, 1)
         if not player.done:
             state = player.state
-            if args.model == 'CONV':
-                state = state.unsqueeze(0)
+            # if args.model == 'CONV':
+            #     state = state.unsqueeze(0)
             value, _, _, _ = player.model(
                 (Variable(state), (player.hx, player.cx)))
             R = value.data
@@ -101,7 +103,7 @@ def train(rank, args, shared_model, optimizer):
             value_loss = value_loss + 0.5 * advantage.pow(2)
 
             # Generalized Advantage Estimataion
-  #          print(player.rewards[i])
+            # print(player.rewards[i])
             delta_t = player.rewards[i] + args.gamma * \
                 player.values[i + 1].data - player.values[i].data
 
@@ -116,3 +118,10 @@ def train(rank, args, shared_model, optimizer):
         ensure_shared_grads(player.model, shared_model, gpu=gpu_id >= 0)
         optimizer.step()
         player.clear_actions()
+
+        num_train.value += 1
+        if num_train.value >= args.num_train:
+            break
+
+    env.end()
+    print("Worker {} ends ................".format(rank))

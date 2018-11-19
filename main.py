@@ -40,7 +40,7 @@ parser.add_argument(
 parser.add_argument(
     '--workers',
     type=int,
-    default=32,
+    default=1,
     metavar='W',
     help='how many training processes to use (default: 32)')
 parser.add_argument(
@@ -52,12 +52,12 @@ parser.add_argument(
 parser.add_argument(
     '--max-episode-length',
     type=int,
-    default=10000,
+    default=1200,
     metavar='M',
     help='maximum length of an episode (default: 10000)')
 parser.add_argument(
     '--env',
-    default='BipedalWalker-v2',
+    default='Torcs',
     metavar='ENV',
     help='environment to train on (default: BipedalWalker-v2)')
 parser.add_argument(
@@ -109,7 +109,7 @@ parser.add_argument(
 parser.add_argument(
     '--gpu-ids',
     type=int,
-    default=-1,
+    default=[0],
     nargs='+',
     help='GPUs to use [-1 CPU only] (default: -1)')
 parser.add_argument(
@@ -117,6 +117,12 @@ parser.add_argument(
     default=True,
     metavar='AM',
     help='Adam optimizer amsgrad parameter')
+parser.add_argument(
+    '--num_train',
+    default=20000,
+    metavar='NT',
+    help='Number of training iteration'
+)
 
 
 # Based on
@@ -133,12 +139,12 @@ if __name__ == '__main__':
     else:
         torch.cuda.manual_seed(args.seed)
         mp.set_start_method('spawn')
-    env = create_env(args.env, args)
+    # env = create_env(args.env, args)
     if args.model == 'MLP':
-        shared_model = A3C_MLP(
-            env.observation_space.shape[0], env.action_space, args.stack_frames)
-    if args.model == 'CONV':
-        shared_model = A3C_CONV(args.stack_frames, env.action_space)
+        shared_model = A3C_MLP(25, 1, 1)
+            # env.observation_space.shape[0], env.action_space, args.stack_frames)
+    # if args.model == 'CONV':
+    #     shared_model = A3C_CONV(args.stack_frames, env.action_space)
     if args.load:
         saved_state = torch.load('{0}{1}.dat'.format(
             args.load_model_dir, args.env), map_location=lambda storage, loc: storage)
@@ -155,18 +161,23 @@ if __name__ == '__main__':
     else:
         optimizer = None
 
-    processes = []
+    num_train = mp.Value("i", 0)
 
-    p = mp.Process(target=test, args=(args, shared_model))
-    p.start()
-    processes.append(p)
+    tester = mp.Process(target=test, args=(args, shared_model, num_train))
+    tester.start()
     time.sleep(0.1)
+
+    processes = []
     for rank in range(0, args.workers):
         p = mp.Process(target=train, args=(
-            rank, args, shared_model, optimizer))
+            rank, args, shared_model, optimizer, num_train))
         p.start()
         processes.append(p)
         time.sleep(0.1)
+
     for p in processes:
         time.sleep(0.1)
         p.join()
+
+    tester.join()
+    print("Training ends .......")
